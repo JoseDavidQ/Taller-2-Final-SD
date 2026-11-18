@@ -1,0 +1,11 @@
+.git
+**/__pycache__
+*.pyc
+.venv
+evidencias
+resultados
+informe
+docs
+tests
+.env
+common/gen

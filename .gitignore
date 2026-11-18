@@ -1,0 +1,15 @@
+# Claves y secretos (norma 8 del taller)
+*.pem
+*.key
+.ssh/
+.env
+config/cluster.vm.json
+# Python
+__pycache__/
+*.pyc
+.venv/
+# Código generado a partir del .proto (se genera con: python proto/generar.py)
+common/gen/
+# Ejecución
+logs/
+informe/*.docx
