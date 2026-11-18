@@ -1,0 +1,67 @@
+# Despliegue REPARTIDO en varias VM (una por integrante), unidas por Tailscale.
+# En CADA VM:      docker compose -f docker-compose.nodo.yml --env-file .env up -d --build
+# Solo en la VM del broker (la de 3 GB):  añade  --profile broker
+# Variables (ver .env.example): NODE_ID, NODE_IP (IP Tailscale de esta VM), AGENT_ID, BROKER_HOST,
+# COORDINATORS, REDIS_PASSWORD, RABBITMQ_USER/PASS. Cada VM necesita config/cluster.vm.json.
+name: taller2
+
+x-comun: &comun
+  restart: unless-stopped
+  networks: [taller2]
+
+services:
+  rabbitmq:
+    <<: *comun
+    profiles: [broker]
+    build: {context: ./broker}
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-taller2}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-taller2-pass}
+    ports: ["${NODE_IP}:5672:5672", "${NODE_IP}:15672:15672"]
+    volumes: ["rabbitmq-data:/var/lib/rabbitmq"]
+
+  redis:
+    <<: *comun
+    build: {context: ./database}
+    environment: {REDIS_PASSWORD: "${REDIS_PASSWORD}"}
+    ports: ["${NODE_IP}:6379:6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  coordinator:
+    <<: *comun
+    build: {context: ., dockerfile: coordinator/Dockerfile}
+    environment:
+      NODE_ID: "${NODE_ID}"
+      CLUSTER_CONFIG: /app/config/cluster.vm.json
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      BROKER_URL: amqp://${RABBITMQ_USER:-taller2}:${RABBITMQ_PASS:-taller2-pass}@${BROKER_HOST}:5672/%2F
+    ports: ["${NODE_IP}:50051:50051", "${NODE_IP}:7001:7001"]
+    volumes: ["./config/cluster.vm.json:/app/config/cluster.vm.json:ro", "coord-logs:/data/logs"]
+    depends_on: {redis: {condition: service_healthy}}
+
+  agent:
+    <<: *comun
+    build: {context: ., dockerfile: agent/Dockerfile}
+    environment:
+      AGENT_ID: ${AGENT_ID}
+      NODE_ID: "${NODE_ID}"
+      AGENT_ADDRESS: ${NODE_IP}:50061
+      COORDINATORS: ${COORDINATORS}
+      BROKER_URL: amqp://${RABBITMQ_USER:-taller2}:${RABBITMQ_PASS:-taller2-pass}@${BROKER_HOST}:5672/%2F
+      METRICS_INTERVAL: "3"
+    ports: ["${NODE_IP}:50061:50061"]
+
+networks:
+  taller2: {}
+
+volumes:
+  rabbitmq-data: {}
+  redis-data: {}
+  coord-logs: {}

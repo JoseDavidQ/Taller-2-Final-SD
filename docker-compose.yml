@@ -1,0 +1,110 @@
+# Despliegue COMPLETO en UNA sola máquina (una VM o tu PC): broker + 3 bases de datos + 3 coordinadores
+# + 3 agentes.   docker compose up -d --build
+# Para repartir los componentes en VARIAS VM usa docker-compose.nodo.yml (ver README).
+name: taller2
+
+x-comun: &comun
+  restart: unless-stopped
+  networks: [taller2]
+
+x-broker-url: &broker-url
+  BROKER_URL: amqp://${RABBITMQ_USER:-taller2}:${RABBITMQ_PASS:-taller2-pass}@rabbitmq:5672/%2F
+
+x-coordinador: &coordinador
+  <<: *comun
+  build: {context: ., dockerfile: coordinator/Dockerfile}
+  volumes: ["coord-logs:/data/logs"]
+
+x-agente: &agente
+  <<: *comun
+  build: {context: ., dockerfile: agent/Dockerfile}
+  depends_on:
+    rabbitmq: {condition: service_healthy}
+
+x-redis: &redis
+  <<: *comun
+  build: {context: ./database}
+  environment: {REDIS_PASSWORD: "${REDIS_PASSWORD:-taller2-redis}"}
+  healthcheck:
+    test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+    interval: 3s
+    timeout: 3s
+    retries: 20
+
+services:
+  rabbitmq:
+    <<: *comun
+    build: {context: ./broker}
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-taller2}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-taller2-pass}
+    ports: ["5672:5672", "15672:15672"]
+    volumes: ["rabbitmq-data:/var/lib/rabbitmq"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  redis1: {<<: *redis, volumes: ["redis1-data:/data"]}
+  redis2: {<<: *redis, volumes: ["redis2-data:/data"]}
+  redis3: {<<: *redis, volumes: ["redis3-data:/data"]}
+
+  coord1:
+    <<: *coordinador
+    environment: &coord-env-1
+      NODE_ID: "1"
+      CLUSTER_CONFIG: /app/config/cluster.compose.json
+      REDIS_HOST: redis1
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-taller2-redis}
+      <<: *broker-url
+    depends_on: {redis1: {condition: service_healthy}, rabbitmq: {condition: service_healthy}}
+  coord2:
+    <<: *coordinador
+    environment:
+      <<: *coord-env-1
+      NODE_ID: "2"
+      REDIS_HOST: redis2
+    depends_on: {redis2: {condition: service_healthy}, rabbitmq: {condition: service_healthy}}
+  coord3:
+    <<: *coordinador
+    environment:
+      <<: *coord-env-1
+      NODE_ID: "3"
+      REDIS_HOST: redis3
+    depends_on: {redis3: {condition: service_healthy}, rabbitmq: {condition: service_healthy}}
+
+  agent1:
+    <<: *agente
+    environment: &agent-env-1
+      AGENT_ID: agent1
+      NODE_ID: "1"
+      AGENT_ADDRESS: agent1:50061
+      COORDINATORS: "1=coord1:50051,2=coord2:50051,3=coord3:50051"
+      METRICS_INTERVAL: "3"
+      <<: *broker-url
+  agent2:
+    <<: *agente
+    environment:
+      <<: *agent-env-1
+      AGENT_ID: agent2
+      NODE_ID: "2"
+      AGENT_ADDRESS: agent2:50061
+  agent3:
+    <<: *agente
+    environment:
+      <<: *agent-env-1
+      AGENT_ID: agent3
+      NODE_ID: "3"
+      AGENT_ADDRESS: agent3:50061
+
+networks:
+  taller2: {}
+
+volumes:
+  rabbitmq-data: {}
+  redis1-data: {}
+  redis2-data: {}
+  redis3-data: {}
+  coord-logs: {}
