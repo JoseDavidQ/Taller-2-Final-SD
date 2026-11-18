@@ -1,0 +1,61 @@
+=== E4 2026-11-13T16:52:17+00:00 (modo vm) ===
+--- (a) escenario sin fallos
+2026-11-13T16:52:17.996Z [agent1-cli] solicitud de asignación id=1861892b recursos=(1 cpu, 128 MB, 5 Mbps) fallo_inyectado=0
+2026-11-13T16:52:18.008Z [agent1-cli] [cliente] coordinador 1 no es líder; paso al líder 2
+2026-11-13T16:52:18.080Z [agent1-cli] RESPUESTA saga=1861892b estado=COMPLETADA origen=agent2 detalle=asignación completada
+2026-11-13T16:52:18.080Z [agent1-cli]    paso 1 reservar: OK
+2026-11-13T16:52:18.080Z [agent1-cli]    paso 2 replicar: OK
+2026-11-13T16:52:18.080Z [agent1-cli]    paso 3 confirmar y notificar: OK
+
+--- (b) escenario con FALLA en el paso 2 (replicar en la base de datos)
+2026-11-13T16:52:18.619Z [agent1-cli] solicitud de asignación id=defccfe2 recursos=(2 cpu, 512 MB, 20 Mbps) fallo_inyectado=2
+2026-11-13T16:52:18.630Z [agent1-cli] [cliente] coordinador 1 no es líder; paso al líder 2
+2026-11-13T16:52:18.689Z [agent1-cli] RESPUESTA saga=defccfe2 estado=COMPENSADA origen=agent3 detalle=paso 2 falló: fallo inyectado en el paso 2
+2026-11-13T16:52:18.689Z [agent1-cli]    paso 1 reservar: COMPENSADO
+2026-11-13T16:52:18.689Z [agent1-cli]    paso 2 replicar: FALLO (fallo inyectado en el paso 2)
+2026-11-13T16:52:18.689Z [agent1-cli]    paso 3 confirmar y notificar: PENDIENTE
+
+--- tabla de estados de las Sagas (guardada en la base de datos)
+saga      estado       origen   paso 1        paso 2        paso 3        detalle
+1861892b  COMPLETADA   agent2   OK            OK            OK            asignación completada
+33882def  COMPLETADA   agent3   OK            OK            OK            asignación completada
+7512c5cd  COMPENSADA   agent2   COMPENSADO    FALLO         PENDIENTE     paso 2 falló: fallo inyectado en el paso 2
+d7e6e687  COMPLETADA   agent1   OK            OK            OK            asignación completada
+defccfe2  COMPENSADA   agent3   COMPENSADO    FALLO         PENDIENTE     paso 2 falló: fallo inyectado en el paso 2
+e1718d6a  COMPENSADA   agent1   COMPENSADO    COMPENSADO    COMPENSADO    paso 3 falló: no se pudo notificar al agente (broker sin confirmar)
+f6b9c6dd  COMPLETADA   agent2   OK            OK            OK            asignación completada
+
+--- historial de estados de la Saga compensada (e1718d6a)
+--- historial de estados (log persistente en Redis) ---
+16:38:52 EN_CURSO origen=agent1 solicitante=agent1 recursos={'cpu': 1, 'mem_mb': 64, 'bw_mbps': 1}
+16:38:52 paso 1 OK
+16:38:52 paso 2 OK
+16:38:56 paso 3 FALLÓ (no se pudo notificar al agente (broker sin confirmar)) -> EN_CURSO -> COMPENSANDO
+16:38:56 compensación del paso 3 OK
+16:38:56 compensación del paso 2 OK
+16:38:56 compensación del paso 1 OK
+16:38:56 COMPENSANDO -> COMPENSADA
+
+--- en la base de datos (réplica) solo quedó la asignación de la Saga completada
+alloc:1861892b-7d72-481e-bcd0-cdc896c90982 {"origin": "agent2", "requester": "agent1", "resources": {"bw_mbps": 5, "cpu": 1, "mem_mb": 128}, "saga_id": "1861892b-7d72-481e-bcd0-cdc896c90982", "state": "CONFIRMADA", "ts": 1794588738.049243}
+alloc:33882def-2271-4449-9636-91c9d525330d {"origin": "agent3", "requester": "agent1", "resources": {"bw_mbps": 10, "cpu": 1, "mem_mb": 256}, "saga_id": "33882def-2271-4449-9636-91c9d525330d", "state": "CONFIRMADA", "ts": 1794587820.314947}
+alloc:d7e6e687-b29f-45e5-9112-112ef6051d2d {"origin": "agent1", "requester": "agent1", "resources": {"bw_mbps": 10, "cpu": 1, "mem_mb": 256}, "saga_id": "d7e6e687-b29f-45e5-9112-112ef6051d2d", "state": "CONFIRMADA", "ts": 1794588712.530485}
+alloc:f6b9c6dd-5096-47f1-a234-29e7d54ab12d {"origin": "agent2", "requester": "agent1", "resources": {"bw_mbps": 5, "cpu": 1, "mem_mb": 128}, "saga_id": "f6b9c6dd-5096-47f1-a234-29e7d54ab12d", "state": "CONFIRMADA", "ts": 1794587832.9869132}
+
+--- trazas: reserva y su liberación en el agente origen, y notificaciones
+2026-11-13T16:52:18.032Z [coord2] SAGA 1861892b | EN_CURSO origen=agent2 solicitante=agent1 recursos={'cpu': 1, 'mem_mb': 128, 'bw_mbps': 5}
+2026-11-13T16:52:18.042Z [agent2] [agent2] PASO 1 reservar saga=1861892b -> OK (reservada)
+2026-11-13T16:52:18.045Z [coord2] SAGA 1861892b | paso 1 OK
+2026-11-13T16:52:18.046Z [coord2] SAGA 1861892b | paso 2 OK
+2026-11-13T16:52:18.048Z [agent2] [agent2] PASO 3 confirmar saga=1861892b -> OK (confirmada)
+2026-11-13T16:52:18.062Z [coord2] SAGA 1861892b | paso 3 OK
+2026-11-13T16:52:18.063Z [coord2] SAGA 1861892b | EN_CURSO -> COMPLETADA
+2026-11-13T16:52:18.070Z [agent1] NOTIFICACIÓN de asignación: saga=1861892b estado=COMPLETADA origen=agent2 (asignación confirmada) lamport=4832
+2026-11-13T16:52:18.646Z [coord2] SAGA defccfe2 | EN_CURSO origen=agent3 solicitante=agent1 recursos={'cpu': 2, 'mem_mb': 512, 'bw_mbps': 20}
+2026-11-13T16:52:18.648Z [agent3] [agent3] PASO 1 reservar saga=defccfe2 -> OK (reservada)
+2026-11-13T16:52:18.652Z [coord2] SAGA defccfe2 | paso 1 OK
+2026-11-13T16:52:18.654Z [coord2] SAGA defccfe2 | paso 2 FALLÓ (fallo inyectado en el paso 2) -> EN_CURSO -> COMPENSANDO
+2026-11-13T16:52:18.655Z [agent3] [agent3] COMPENSACIÓN paso 1: liberar saga=defccfe2 (liberada)
+2026-11-13T16:52:18.661Z [coord2] SAGA defccfe2 | compensación del paso 1 OK
+2026-11-13T16:52:18.663Z [coord2] SAGA defccfe2 | COMPENSANDO -> COMPENSADA
+2026-11-13T16:52:18.683Z [agent1] NOTIFICACIÓN de asignación: saga=defccfe2 estado=COMPENSADA origen=agent3 (paso 2 falló: fallo inyectado en el paso 2) lamport=4845

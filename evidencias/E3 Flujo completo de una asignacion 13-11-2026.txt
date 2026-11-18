@@ -1,0 +1,56 @@
+=== E3 2026-11-13T16:51:50+00:00 (modo vm) ===
+--- componentes en ejecución
+-- VM 1 (100.108.57.51)
+SERVICE       STATUS
+agent         Up 16 minutes
+coordinator   Up 16 minutes
+redis         Up 16 minutes (healthy)
+-- VM 2 (100.67.78.91)
+SERVICE       STATUS
+agent         Up 16 minutes
+coordinator   Up 16 minutes
+redis         Up 16 minutes (healthy)
+-- VM 3 (100.98.213.46)
+SERVICE       STATUS
+agent         Up 16 minutes
+coordinator   Up 16 minutes
+rabbitmq      Up 12 minutes
+redis         Up 16 minutes (healthy)
+
+--- 1) el agente 1 pide una asignación (1 cpu, 256 MB, 10 Mbps)
+2026-11-13T16:51:52.486Z [agent1-cli] solicitud de asignación id=d7e6e687 recursos=(1 cpu, 256 MB, 10 Mbps) fallo_inyectado=0
+2026-11-13T16:51:52.500Z [agent1-cli] [cliente] coordinador 1 no es líder; paso al líder 2
+2026-11-13T16:51:52.610Z [agent1-cli] RESPUESTA saga=d7e6e687 estado=COMPLETADA origen=agent1 detalle=asignación completada
+2026-11-13T16:51:52.610Z [agent1-cli]    paso 1 reservar: OK
+2026-11-13T16:51:52.610Z [agent1-cli]    paso 2 replicar: OK
+2026-11-13T16:51:52.610Z [agent1-cli]    paso 3 confirmar y notificar: OK
+
+--- 2) estado de la Saga y su historial persistido en la base de datos
+saga      estado       origen   paso 1        paso 2        paso 3        detalle
+33882def  COMPLETADA   agent3   OK            OK            OK            asignación completada
+7512c5cd  COMPENSADA   agent2   COMPENSADO    FALLO         PENDIENTE     paso 2 falló: fallo inyectado en el paso 2
+d7e6e687  COMPLETADA   agent1   OK            OK            OK            asignación completada
+e1718d6a  COMPENSADA   agent1   COMPENSADO    COMPENSADO    COMPENSADO    paso 3 falló: no se pudo notificar al agente (broker sin confirmar)
+f6b9c6dd  COMPLETADA   agent2   OK            OK            OK            asignación completada
+--- historial de estados (log persistente en Redis) ---
+16:37:12 EN_CURSO origen=agent2 solicitante=agent1 recursos={'cpu': 1, 'mem_mb': 128, 'bw_mbps': 5}
+16:37:12 paso 1 OK
+16:37:12 paso 2 OK
+16:37:12 paso 3 OK
+16:37:12 EN_CURSO -> COMPLETADA
+
+--- 3) la asignación quedó replicada: se lee en la base de datos de OTRO nodo (réplica)
+alloc:33882def-2271-4449-9636-91c9d525330d {"origin": "agent3", "requester": "agent1", "resources": {"bw_mbps": 10, "cpu": 1, "mem_mb": 256}, "saga_id": "33882def-2271-4449-9636-91c9d525330d", "state": "CONFIRMADA", "ts": 1794587820.314947}
+alloc:d7e6e687-b29f-45e5-9112-112ef6051d2d {"origin": "agent1", "requester": "agent1", "resources": {"bw_mbps": 10, "cpu": 1, "mem_mb": 256}, "saga_id": "d7e6e687-b29f-45e5-9112-112ef6051d2d", "state": "CONFIRMADA", "ts": 1794588712.530485}
+alloc:f6b9c6dd-5096-47f1-a234-29e7d54ab12d {"origin": "agent2", "requester": "agent1", "resources": {"bw_mbps": 5, "cpu": 1, "mem_mb": 128}, "saga_id": "f6b9c6dd-5096-47f1-a234-29e7d54ab12d", "state": "CONFIRMADA", "ts": 1794587832.9869132}
+
+--- 4) secuencia en los componentes (solicitud, pasos de la Saga y notificación)
+2026-11-13T16:51:52.493Z [coord2] solicitud de asignación d7e6e687 de agent1: 1 cpu, 256 MB, 10 Mbps
+2026-11-13T16:51:52.510Z [coord2] SAGA d7e6e687 | EN_CURSO origen=agent1 solicitante=agent1 recursos={'cpu': 1, 'mem_mb': 256, 'bw_mbps': 10}
+2026-11-13T16:51:52.520Z [coord2] SAGA d7e6e687 | paso 1 OK
+2026-11-13T16:51:52.525Z [coord2] SAGA d7e6e687 | paso 2 OK
+2026-11-13T16:51:52.531Z [agent1] [agent1] PASO 1 reservar saga=d7e6e687 -> OK (reservada)
+2026-11-13T16:51:52.545Z [agent1] [agent1] PASO 3 confirmar saga=d7e6e687 -> OK (confirmada)
+2026-11-13T16:51:52.587Z [agent1] NOTIFICACIÓN de asignación: saga=d7e6e687 estado=COMPLETADA origen=agent1 (asignación confirmada) lamport=4700
+2026-11-13T16:51:52.589Z [coord2] SAGA d7e6e687 | paso 3 OK
+2026-11-13T16:51:52.591Z [coord2] SAGA d7e6e687 | EN_CURSO -> COMPLETADA
